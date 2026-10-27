@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
   <meta name="theme-color" content="#0C0D0E" />
   <meta name="description" content="APEX: a private study and focus tracker. Your data stays in your browser." />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src data: https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src https://*.googleapis.com https://accounts.google.com; frame-src https://accounts.google.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://apis.google.com https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src data: https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src https://*.googleapis.com https://accounts.google.com https://apex-ba40d.firebaseapp.com; frame-src https://accounts.google.com https://apex-ba40d.firebaseapp.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'" />
   <title>APEX</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230C0D0E'/%3E%3Cpath d='M8 23 16 7l8 16M11 18h10' fill='none' stroke='%2310B981' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="manifest" href="manifest.webmanifest" />
@@ -1331,19 +1331,20 @@ img, video { max-width: 100%; height: auto; }
 
       <div class="space-y-3 pt-4 border-t border-hairline">
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-secondary-tone">3. Google Drive Sync (optional)</h3>
+                    <h3 class="text-xs font-semibold uppercase tracking-wider text-secondary-tone">3. Cloud sync (sign in with Google)</h3>
           <span id="modalCloudStatusBadge" class="text-[11px] font-mono-num text-[var(--accent-sage)]">Local only</span>
         </div>
-        <input id="googleClientIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Your OAuth client ID (xxxx.apps.googleusercontent.com)" class="w-full input-quiet p-2.5 text-xs font-mono-num" />
+        <p id="cloudAccountLine" class="text-xs text-secondary-tone">Not signed in. Your data is saved in this browser only.</p>
         <div class="flex items-center justify-between gap-2">
-          <span id="syncStatusLine" class="text-[11px] font-mono-num text-muted-tone truncate">Not connected</span>
+          <span id="syncStatusLine" class="text-[11px] font-mono-num text-muted-tone truncate"></span>
           <div class="flex items-center gap-2 shrink-0">
-            <button onclick="window.apexApp.syncNow()" class="px-3 py-1.5 rounded-lg surface-subtle hover:border-[var(--border-focus)] text-xs font-medium transition">Sync now</button>
-            <button onclick="window.apexApp.connectGoogleDrive()" class="px-3.5 py-1.5 rounded-lg bg-[var(--text-primary)] text-[var(--bg-canvas)] text-xs font-medium hover:opacity-90 transition">Connect Drive</button>
+            <button id="btnSyncNow" onclick="window.apexApp.syncNow()" class="hidden px-3 py-1.5 rounded-lg surface-subtle hover:border-[var(--border-focus)] text-xs font-medium transition">Sync now</button>
+            <button id="btnSignOut" onclick="window.apexApp.signOutGoogle()" class="hidden px-3 py-1.5 rounded-lg surface-subtle hover:border-[var(--border-focus)] text-xs font-medium transition">Sign out</button>
+            <button id="btnSignIn" onclick="window.apexApp.signInGoogle()" class="px-3.5 py-1.5 rounded-lg bg-[var(--text-primary)] text-[var(--bg-canvas)] text-xs font-medium hover:opacity-90 transition">Sign in with Google</button>
           </div>
         </div>
         <p class="text-[11px] text-muted-tone">
-          Keeps one file (<code>apex-data.json</code>) in a hidden app-data folder of your own Google Drive, merged record by record. Needs the app opened from an https address, not a local file. Setup: docs/GOOGLE_SETUP.md. Tested against a simulated Drive only, not yet against live Google.
+          Each Google account gets its own private copy, merged record by record. Nobody else can see it, and a friend who signs in gets their own empty space. Syncs a few seconds after you change something and whenever you open the app. Needs the app opened from its https address, not a local file. Tested against a simulated Firestore; the first live sign-in is the real test.
         </p>
       </div>
 
@@ -3659,65 +3660,87 @@ ${card2.prompt}`, dates: `${ymd(due)}/${ymd(addDays(due, 1))}` });
   // src/sync.js
   var sync_exports = {};
   __export(sync_exports, {
-    DRIVE_SCOPE: () => DRIVE_SCOPE,
-    FILE_NAME: () => FILE_NAME,
+    CHUNK_CHARS: () => CHUNK_CHARS,
+    MAX_CHUNKS: () => MAX_CHUNKS,
     SyncError: () => SyncError,
-    createDrive: () => createDrive,
-    createTokenProvider: () => createTokenProvider,
-    runSync: () => runSync
+    createRemote: () => createRemote,
+    explainError: () => explainError,
+    runSync: () => runSync,
+    splitText: () => splitText
   });
-  function explain(status) {
-    if (status === 401) return new SyncError("auth", "Google sign-in expired. Connect again.");
-    if (status === 403) return new SyncError("forbidden", "Google refused the request (403). Check that the Drive API is enabled and the app-data scope was granted.");
-    if (status === 404) return new SyncError("missing", "The sync file was not found.");
-    if (status === 429) return new SyncError("rate", "Google is rate-limiting requests. Try again in a minute.");
-    return new SyncError("http", `Google returned an unexpected error (${status}).`);
+  function explainError(e) {
+    if (e instanceof SyncError) return e;
+    const code = String(e && e.code || "").replace(/^firestore\//, "");
+    switch (code) {
+      case "permission-denied":
+        return new SyncError("forbidden", "Firestore refused access. Check that the security rules were published and that you are signed in.");
+      case "unauthenticated":
+        return new SyncError("auth", "Your sign-in expired. Sign in with Google again.");
+      case "unavailable":
+      case "deadline-exceeded":
+      case "auth/network-request-failed":
+        return new SyncError("network", "Could not reach Firebase. Check the connection and try again.");
+      case "resource-exhausted":
+        return new SyncError("rate", "Firebase is limiting requests (daily free quota or too many requests). Try again later.");
+      case "not-found":
+      case "failed-precondition":
+        return new SyncError("config", "The Firestore database was not found. Create it in the Firebase console (Build, Firestore Database).");
+      case "auth/popup-closed-by-user":
+      case "auth/cancelled-popup-request":
+        return new SyncError("auth", "The sign-in window was closed before it finished.");
+      case "auth/popup-blocked":
+        return new SyncError("auth", "Your browser blocked the sign-in window. Allow pop-ups for this site and tap Sign in again.");
+      case "auth/unauthorized-domain":
+        return new SyncError("config", "This web address is not in Firebase Authentication, Settings, Authorized domains.");
+      case "auth/operation-not-allowed":
+        return new SyncError("config", "Google sign-in is not switched on in Firebase Authentication, Sign-in method.");
+      case "auth/user-disabled":
+        return new SyncError("auth", "This Google account was disabled for this app.");
+      default:
+        break;
+    }
+    if (e instanceof TypeError) return new SyncError("network", "Could not reach Firebase. Check the connection and try again.");
+    return new SyncError("http", `Unexpected cloud error${code ? ` (${code})` : ""}. Your local data is unchanged.`);
   }
-  function createDrive({ fetchFn, getToken }) {
-    const call = async (url, init2 = {}) => {
-      const token = await getToken();
-      if (!token) throw new SyncError("auth", "Not signed in to Google.");
-      let res;
-      try {
-        res = await fetchFn(url, { ...init2, headers: { ...init2.headers || {}, Authorization: `Bearer ${token}` } });
-      } catch (e) {
-        throw new SyncError("network", "Could not reach Google. Check the connection and try again.");
+  function splitText(text2, size = CHUNK_CHARS) {
+    const out = [];
+    let i = 0;
+    while (i < text2.length) {
+      let end = Math.min(text2.length, i + size);
+      if (end < text2.length) {
+        const c = text2.charCodeAt(end - 1);
+        if (c >= 55296 && c <= 56319) end -= 1;
       }
-      if (!res.ok) throw explain(res.status);
-      return res;
-    };
+      out.push(text2.slice(i, end));
+      i = end;
+    }
+    return out.length ? out : [""];
+  }
+  function createRemote(db) {
     return {
-      async find() {
-        const q = encodeURIComponent(`name = '${FILE_NAME}' and trashed = false`);
-        const res = await call(`${API}?spaces=appDataFolder&q=${q}&fields=files(id,version)&pageSize=10`);
-        const files = (await res.json()).files || [];
-        return files[0] || null;
+      async read() {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const meta = await db.getDoc(META);
+          if (!meta) return null;
+          if (!Number.isInteger(meta.version) || !Number.isInteger(meta.chunks) || meta.chunks < 1 || meta.chunks > MAX_CHUNKS) throw new SyncError("corrupt-remote", "The cloud copy has an unexpected shape, so it was left untouched.");
+          const parts = await Promise.all(Array.from({ length: meta.chunks }, (_, i) => db.getDoc(chunkPath(i))));
+          if (parts.every((p) => p && p.v === meta.version && typeof p.t === "string")) return { version: meta.version, text: parts.map((p) => p.t).join("") };
+        }
+        throw new SyncError("busy", "The cloud copy was changing while it was read. Try again in a moment.");
       },
-      async head(id) {
-        const res = await call(`${API}/${id}?fields=id,version`);
-        return res.json();
-      },
-      async download(id) {
-        const res = await call(`${API}/${id}?alt=media`);
-        return res.text();
-      },
-      async create(text2) {
-        const boundary = `apex${Math.random().toString(16).slice(2)}`;
-        const body = `--${boundary}\r
-Content-Type: application/json; charset=UTF-8\r
-\r
-${JSON.stringify({ name: FILE_NAME, parents: ["appDataFolder"], mimeType: "application/json" })}\r
---${boundary}\r
-Content-Type: application/json\r
-\r
-${text2}\r
---${boundary}--`;
-        const res = await call(`${UPLOAD}?uploadType=multipart&fields=id,version`, { method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body });
-        return res.json();
-      },
-      async update(id, text2) {
-        const res = await call(`${UPLOAD}/${id}?uploadType=media&fields=id,version`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: text2 });
-        return res.json();
+      async write(text2, expected) {
+        const chunks = splitText(text2);
+        if (chunks.length > MAX_CHUNKS) throw new SyncError("too-big", "Your data is larger than the cloud copy can hold. Export a backup and archive old items.");
+        return db.transact(async (tx) => {
+          const meta = await tx.get(META);
+          const current = meta ? meta.version : null;
+          if (current !== expected) return { conflict: true };
+          const version = (current || 0) + 1;
+          chunks.forEach((t, i) => tx.set(chunkPath(i), { v: version, t }));
+          if (meta) for (let i = chunks.length; i < meta.chunks; i++) tx.delete(chunkPath(i));
+          tx.set(META, { version, chunks: chunks.length, updatedAt: Date.now() });
+          return { version };
+        });
       }
     };
   }
@@ -3726,89 +3749,156 @@ ${text2}\r
     if (startWs !== "real") return { status: "refused", message: "The sample workspace never syncs." };
     const max = ctx.maxRounds || 3;
     const summary = { status: "ok", rounds: 0, uploaded: false, pulledChanges: false };
+    let applied = false;
     for (let round = 0; round < max; round++) {
       summary.rounds = round + 1;
       const editsAtStart = ctx.editRev();
-      const file = await ctx.drive.find();
+      const got = await ctx.remote.read();
       let remote = null;
-      let version = null;
-      if (file) {
-        const text2 = await ctx.drive.download(file.id);
+      const version = got ? got.version : null;
+      if (got) {
         let parsed;
         try {
-          parsed = JSON.parse(text2);
+          parsed = JSON.parse(got.text);
         } catch {
-          throw new SyncError("corrupt-remote", "The file in Google Drive is not valid JSON, so it was left untouched.");
+          throw new SyncError("corrupt-remote", "The cloud copy is not valid JSON, so it was left untouched.");
         }
         const n = normalizeDoc(parsed);
-        if (!n.ok) throw new SyncError("corrupt-remote", `The file in Google Drive was not used: ${n.error}`);
-        if (n.doc.workspace !== "real") throw new SyncError("corrupt-remote", "The file in Google Drive belongs to a sample workspace and was not used.");
+        if (!n.ok) throw new SyncError("corrupt-remote", `The cloud copy was not used: ${n.error}`);
+        if (n.doc.workspace !== "real") throw new SyncError("corrupt-remote", "The cloud copy belongs to a sample workspace and was not used.");
         remote = n.doc;
-        version = file.version;
       }
       const local = ctx.getLocal();
       const merged = remote ? mergeDocs(local, remote) : local;
-      const needsUpload = !remote || !docsEqual(merged, remote);
-      if (needsUpload) {
-        if (file) {
-          const head = await ctx.drive.head(file.id);
-          if (head.version !== version) {
-            summary.raced = true;
-            continue;
-          }
+      if (!remote || !docsEqual(merged, remote)) {
+        const w = await ctx.remote.write(JSON.stringify(merged), version);
+        if (w.conflict) {
+          summary.raced = true;
+          continue;
         }
-        const text2 = JSON.stringify(merged);
-        if (file) await ctx.drive.update(file.id, text2);
-        else await ctx.drive.create(text2);
         summary.uploaded = true;
       }
       if (ctx.workspace() !== startWs) return { status: "discarded", message: "You switched workspace during the sync; the result was discarded." };
       summary.pulledChanges = summary.pulledChanges || !docsEqual(merged, local);
       ctx.applyMerged(merged);
+      applied = true;
       if (ctx.editRev() === editsAtStart) return summary;
     }
+    if (!applied) return { ...summary, status: "incomplete", message: "Another device kept changing the data. Run Sync again in a moment." };
     return { ...summary, note: `Stopped after ${max} rounds; run Sync again to finish.` };
   }
-  function createTokenProvider({ loadScript, getGoogle, clientId }) {
-    let token = null;
-    let expiresAt = 0;
-    let client = null;
-    return async function getToken(interactive = true) {
-      if (token && Date.now() < expiresAt - 6e4) return token;
-      if (!clientId) throw new SyncError("config", "Paste your Google OAuth client ID first.");
-      await loadScript();
-      const g = getGoogle();
-      if (!g || !g.accounts || !g.accounts.oauth2) throw new SyncError("config", "Google sign-in could not be loaded. Check the connection.");
-      return new Promise((resolve, reject) => {
-        client = g.accounts.oauth2.initTokenClient({
-          client_id: clientId,
-          scope: DRIVE_SCOPE,
-          callback: (resp) => {
-            if (resp.error) return reject(new SyncError("auth", `Google sign-in failed: ${resp.error_description || resp.error}`));
-            token = resp.access_token;
-            expiresAt = Date.now() + (Number(resp.expires_in) || 3600) * 1e3;
-            resolve(token);
-          },
-          error_callback: (err) => reject(new SyncError("auth", `Google sign-in was closed or blocked (${err && err.type || "unknown"}).`))
-        });
-        client.requestAccessToken({ prompt: interactive ? "" : "none" });
-      });
-    };
-  }
-  var DRIVE_SCOPE, FILE_NAME, API, UPLOAD, SyncError;
+  var SyncError, CHUNK_CHARS, MAX_CHUNKS, META, chunkPath;
   var init_sync = __esm({
     "src/sync.js"() {
       init_store();
-      DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
-      FILE_NAME = "apex-data.json";
-      API = "https://www.googleapis.com/drive/v3/files";
-      UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
       SyncError = class extends Error {
         constructor(code, message) {
           super(message);
           this.code = code;
         }
       };
+      CHUNK_CHARS = 25e4;
+      MAX_CHUNKS = 40;
+      META = "store/meta";
+      chunkPath = (i) => `store/c${i}`;
+    }
+  });
+
+  // src/firebase.js
+  var firebase_exports = {};
+  __export(firebase_exports, {
+    SDK_VERSION: () => SDK_VERSION,
+    createCloud: () => createCloud
+  });
+  function createCloud({ config, importModule = (u) => import(u) }) {
+    let sdk = null;
+    let loading = null;
+    async function load() {
+      if (sdk) return sdk;
+      if (!loading) {
+        loading = (async () => {
+          try {
+            const [appM, authM, fsM] = await Promise.all([importModule(`${BASE}firebase-app.js`), importModule(`${BASE}firebase-auth.js`), importModule(`${BASE}firebase-firestore.js`)]);
+            const app = appM.initializeApp(config);
+            const auth = authM.getAuth(app);
+            const fs = fsM.initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
+            sdk = { authM, fsM, auth, fs };
+            return sdk;
+          } catch (e) {
+            loading = null;
+            throw new SyncError("config", "Could not load Google sign-in. Check the connection and try again.");
+          }
+        })();
+      }
+      return loading;
+    }
+    const who = (u) => u ? { uid: u.uid, email: u.email || "", name: u.displayName || "" } : null;
+    return {
+      load,
+      isLoaded: () => Boolean(sdk),
+      /** The user restored from the previous visit (or null). Waits until the SDK has finished reading its saved session. */
+      async restore() {
+        const s = await load();
+        try {
+          await s.auth.authStateReady();
+        } catch (e) {
+          throw explainError(e);
+        }
+        return who(s.auth.currentUser);
+      },
+      async signIn() {
+        const s = await load();
+        try {
+          const p = new s.authM.GoogleAuthProvider();
+          p.setCustomParameters({ prompt: "select_account" });
+          const r = await s.authM.signInWithPopup(s.auth, p);
+          return who(r.user);
+        } catch (e) {
+          throw explainError(e);
+        }
+      },
+      async signOut() {
+        const s = await load();
+        try {
+          await s.authM.signOut(s.auth);
+        } catch (e) {
+          throw explainError(e);
+        }
+      },
+      /** Storage bound to one user: every path lives under users/<uid>/ (the security rule allows nothing else). */
+      db(uid) {
+        if (!sdk) throw new SyncError("config", "Sign-in has not loaded yet.");
+        const { fsM, fs } = sdk;
+        const ref = (p) => fsM.doc(fs, `users/${uid}/${p}`);
+        const read = async (getter, p) => {
+          const snap = await getter(ref(p));
+          return snap.exists() ? snap.data() : null;
+        };
+        return {
+          async getDoc(p) {
+            try {
+              return await read((r) => fsM.getDoc(r), p);
+            } catch (e) {
+              throw explainError(e);
+            }
+          },
+          async transact(fn) {
+            try {
+              return await fsM.runTransaction(fs, async (t) => fn({ get: (p) => read((r) => t.get(r), p), set: (p, d) => t.set(ref(p), d), delete: (p) => t.delete(ref(p)) }));
+            } catch (e) {
+              throw explainError(e);
+            }
+          }
+        };
+      }
+    };
+  }
+  var SDK_VERSION, BASE;
+  var init_firebase = __esm({
+    "src/firebase.js"() {
+      init_sync();
+      SDK_VERSION = "10.14.1";
+      BASE = `https://www.gstatic.com/firebasejs/${SDK_VERSION}/`;
     }
   });
 
@@ -5105,49 +5195,53 @@ ${text2}\r
   });
 
   // tests/sync.tests.js
-  function syncTests(suite, assert2, E, S, Y) {
+  function syncTests(suite, assert2, E, S, Y, F) {
     const { test } = suite;
     const T0 = Date.UTC(2026, 9, 22, 6, 0, 0);
-    function simDrive() {
-      const sim = { file: null, calls: [], version: 0, hooks: {}, failWith: null, networkDown: false };
-      sim.fetch = async (url, init2 = {}) => {
-        sim.calls.push({ url, method: init2.method || "GET", headers: init2.headers || {}, body: init2.body });
-        if (sim.networkDown) throw new TypeError("network down");
-        if (sim.failWith) return { ok: false, status: sim.failWith, json: async () => ({}), text: async () => "" };
-        const u = new URL(url);
-        const method = init2.method || "GET";
-        const ok2 = (data) => ({ ok: true, status: 200, json: async () => data, text: async () => typeof data === "string" ? data : JSON.stringify(data) });
-        if (u.pathname === "/drive/v3/files" && method === "GET") return ok2({ files: sim.file ? [{ id: "F1", version: String(sim.version) }] : [] });
-        if (u.pathname === "/drive/v3/files/F1" && method === "GET" && u.searchParams.get("alt") === "media") {
-          const t = sim.file;
-          if (sim.hooks.afterDownload) sim.hooks.afterDownload();
-          return ok2(t);
-        }
-        if (u.pathname === "/drive/v3/files/F1" && method === "GET") return ok2({ id: "F1", version: String(sim.version) });
-        if (u.pathname === "/upload/drive/v3/files" && method === "POST") {
-          const b = /boundary=(.+)$/.exec(init2.headers["Content-Type"])[1];
-          const parts = init2.body.split(`--${b}`).filter((p) => p && p.trim() !== "--");
-          if (parts.length !== 2) return { ok: false, status: 400, json: async () => ({}), text: async () => "" };
-          const content = parts[1].split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n$/, "");
-          sim.file = content;
-          sim.meta = JSON.parse(parts[0].split("\r\n\r\n")[1].replace(/\r\n$/, ""));
-          sim.version += 1;
-          sim.created = init2.body;
-          return ok2({ id: "F1", version: String(sim.version) });
-        }
-        if (u.pathname === "/upload/drive/v3/files/F1" && method === "PATCH") {
-          if (sim.hooks.beforeUpdate) sim.hooks.beforeUpdate();
-          sim.file = init2.body;
-          sim.version += 1;
-          return ok2({ id: "F1", version: String(sim.version) });
-        }
-        return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+    function simStore() {
+      const sim = { data: /* @__PURE__ */ new Map(), calls: [], hooks: {}, failWith: null, tornRead: false };
+      const clone = (x) => x == null ? null : JSON.parse(JSON.stringify(x));
+      const guard = () => {
+        if (sim.failWith) throw Y.explainError(sim.failWith === "network" ? new TypeError("down") : { code: sim.failWith });
       };
-      sim.externalWrite = (d) => {
-        sim.file = JSON.stringify(d);
-        sim.version += 1;
+      sim.db = {
+        async getDoc(p) {
+          guard();
+          sim.calls.push(["get", p]);
+          let v = clone(sim.data.get(p));
+          if (sim.tornRead && p.startsWith("store/c") && v) v = { ...v, v: v.v - 1 };
+          if (p === "store/meta" && sim.hooks.afterMetaRead) {
+            const h = sim.hooks.afterMetaRead;
+            sim.hooks.afterMetaRead = null;
+            h();
+          }
+          return v;
+        },
+        async transact(fn) {
+          guard();
+          const writes = [];
+          sim.calls.push(["transact"]);
+          const out = await fn({ get: async (p) => clone(sim.data.get(p)), set: (p, d) => writes.push(["set", p, clone(d)]), delete: (p) => writes.push(["del", p]) });
+          for (const [op, p, d] of writes) {
+            if (op === "set") sim.data.set(p, d);
+            else sim.data.delete(p);
+            sim.calls.push([op, p]);
+          }
+          return out;
+        }
       };
-      sim.remoteDoc = () => JSON.parse(sim.file);
+      sim.remote = () => Y.createRemote(sim.db);
+      sim.version = () => (sim.data.get("store/meta") || {}).version || 0;
+      sim.text = () => {
+        const m = sim.data.get("store/meta");
+        return m ? Array.from({ length: m.chunks }, (_, i) => sim.data.get(`store/c${i}`).t).join("") : null;
+      };
+      sim.remoteDoc = () => JSON.parse(sim.text());
+      sim.externalWrite = async (d) => {
+        const r = sim.remote();
+        const cur = await r.read();
+        await r.write(JSON.stringify(d), cur ? cur.version : null);
+      };
       return sim;
     }
     const mkDoc = (docId = "doc_a") => ({ ...S.emptyDoc(T0, "real"), docId });
@@ -5158,7 +5252,7 @@ ${text2}\r
         dev.edits += 1;
       };
       dev.ctx = () => ({
-        drive: Y.createDrive({ fetchFn: sim.fetch, getToken: async () => "tok-123" }),
+        remote: sim.remote(),
         workspace: () => dev.ws,
         getLocal: () => dev.doc,
         editRev: () => dev.edits,
@@ -5172,31 +5266,31 @@ ${text2}\r
       return dev;
     }
     const ids = (d, c = "tasks") => S.live(d, c).map((r) => r.id).sort();
-    test("sync: first connection creates one file in the app-data folder with the local data", async () => {
-      const sim = simDrive();
+    test("sync: first sign-in stores the local data under store/ in the user area", async () => {
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t1", title: "one" }, 1e3);
       const r = await Y.runSync(a.ctx());
       assert2.eq(r.status, "ok");
       assert2.eq(r.uploaded, true);
       assert2.deepEq(ids(sim.remoteDoc()), ["t1"]);
-      assert2.includes(sim.created, '"parents":["appDataFolder"]');
-      assert2.includes(sim.created, '"name":"apex-data.json"');
+      assert2.eq(sim.version(), 1);
+      for (const k of sim.data.keys()) assert2.ok(k.startsWith("store/"), k);
     });
     test("sync: a second device with no data receives everything and uploads nothing", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t1" }, 1e3);
       await Y.runSync(a.ctx());
       const b = device(sim, mkDoc("doc_b"));
-      const v = sim.version;
+      const v = sim.version();
       const r = await Y.runSync(b.ctx());
       assert2.eq(r.uploaded, false);
-      assert2.eq(sim.version, v);
+      assert2.eq(sim.version(), v);
       assert2.deepEq(ids(b.doc), ["t1"]);
     });
     test("sync: two devices with different records converge on the union", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       const b = device(sim, mkDoc("doc_b"));
       a.edit("tasks", { id: "ta" }, 1e3);
@@ -5209,7 +5303,7 @@ ${text2}\r
       assert2.deepEq(ids(sim.remoteDoc()), ["ta", "tb"]);
     });
     test("sync: the newer edit of one record wins on both devices", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       const b = device(sim, mkDoc("doc_b"));
       a.edit("tasks", { id: "t", title: "v1" }, 1e3);
@@ -5224,7 +5318,7 @@ ${text2}\r
       assert2.eq(b.doc.tasks[0].title, "v2 from b");
     });
     test("sync: a deletion on one device reaches the other and is not undone by an old copy", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       const b = device(sim, mkDoc("doc_b"));
       a.edit("tasks", { id: "t" }, 1e3);
@@ -5238,41 +5332,38 @@ ${text2}\r
       assert2.eq(S.live(b.doc, "tasks").length, 0);
       assert2.eq(S.live(sim.remoteDoc(), "tasks").length, 0);
     });
-    test("sync: the sample workspace never syncs and makes no network request", async () => {
-      const sim = simDrive();
+    test("sync: the sample workspace never syncs and makes no request", async () => {
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.ws = "sample";
       const r = await Y.runSync(a.ctx());
       assert2.eq(r.status, "refused");
       assert2.eq(sim.calls.length, 0);
     });
-    test("sync: switching workspace during the upload discards the result", async () => {
-      const sim = simDrive();
+    test("sync: switching workspace during the sync discards the result", async () => {
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t" }, 1);
-      sim.hooks.beforeUpdate = null;
       const ctx = a.ctx();
-      const origFind = ctx.drive.find;
-      ctx.drive.find = async () => {
-        const f = await origFind();
+      const origWrite = ctx.remote.write;
+      ctx.remote.write = async (...x) => {
+        const r2 = await origWrite(...x);
         a.ws = "sample";
-        return f;
+        return r2;
       };
       const r = await Y.runSync(ctx);
       assert2.eq(r.status, "discarded");
       assert2.eq(a.applied, 0);
     });
     test("sync: edits typed during the upload are picked up by a follow-up round, not lost", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t1" }, 1e3);
       let typed = false;
-      sim.hooks.afterDownload = () => {
-      };
       const ctx = a.ctx();
-      const origCreate = ctx.drive.create;
-      ctx.drive.create = async (text2) => {
-        const r2 = await origCreate(text2);
+      const origWrite = ctx.remote.write;
+      ctx.remote.write = async (...x) => {
+        const r2 = await origWrite(...x);
         if (!typed) {
           typed = true;
           a.edit("tasks", { id: "t2-typed-during-upload" }, 2e3);
@@ -5283,30 +5374,81 @@ ${text2}\r
       assert2.ok(r.rounds >= 2, `rounds ${r.rounds}`);
       assert2.deepEq(ids(sim.remoteDoc()), ["t1", "t2-typed-during-upload"]);
     });
-    test("sync: if another device wrote between our read and our write, we read again and keep both changes", async () => {
-      const sim = simDrive();
+    test("sync: if another device wrote between our read and our write, the write is refused, we read again and keep both changes", async () => {
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "ta" }, 1e3);
       await Y.runSync(a.ctx());
       a.edit("tasks", { id: "ta2" }, 2e3);
+      sim.hooks.afterMetaRead = () => {
+        const other = sim.remoteDoc();
+        S.put(other, "tasks", { id: "from-other-device" }, 3e3);
+        sim.data.set("store/c0", { v: 2, t: JSON.stringify(other) });
+        sim.data.set("store/meta", { version: 2, chunks: 1, updatedAt: 1 });
+      };
+      const r = await Y.runSync(a.ctx());
+      assert2.deepEq(ids(sim.remoteDoc()), ["from-other-device", "ta", "ta2"]);
+      assert2.deepEq(ids(a.doc), ["from-other-device", "ta", "ta2"]);
+      assert2.ok(r.status === "ok");
+    });
+    test("sync: a write based on an old version is refused by the compare-and-set and changes nothing", async () => {
+      const sim = simStore();
+      const rem = sim.remote();
+      assert2.deepEq(await rem.write('{"a":1}', null), { version: 1 });
+      assert2.deepEq(await rem.write('{"a":2}', null), { conflict: true });
+      assert2.deepEq(await rem.write('{"a":3}', 7), { conflict: true });
+      assert2.eq(sim.text(), '{"a":1}');
+      assert2.deepEq(await rem.write('{"a":4}', 1), { version: 2 });
+      assert2.eq(sim.text(), '{"a":4}');
+    });
+    test("sync: another device writing after our read makes our write conflict; runSync reads again and keeps both", async () => {
+      const sim = simStore();
+      const a = device(sim, mkDoc());
+      a.edit("tasks", { id: "ta" }, 1e3);
+      await Y.runSync(a.ctx());
+      a.edit("tasks", { id: "ta2" }, 2e3);
+      const ctx = a.ctx();
+      const origRead = ctx.remote.read;
       let raced = false;
-      sim.hooks.afterDownload = () => {
+      ctx.remote.read = async () => {
+        const r2 = await origRead();
         if (!raced) {
           raced = true;
           const other = sim.remoteDoc();
           S.put(other, "tasks", { id: "from-other-device" }, 3e3);
-          sim.externalWrite(other);
+          await sim.externalWrite(other);
         }
+        return r2;
       };
-      const r = await Y.runSync(a.ctx());
+      const r = await Y.runSync(ctx);
       assert2.eq(r.raced, true);
       assert2.deepEq(ids(sim.remoteDoc()), ["from-other-device", "ta", "ta2"]);
       assert2.deepEq(ids(a.doc), ["from-other-device", "ta", "ta2"]);
     });
-    test("sync: an unreadable file in Drive is never overwritten and local data is untouched", async () => {
-      const sim = simDrive();
-      sim.file = "{broken";
-      sim.version = 3;
+    test("sync: if the other device never stops writing, nothing is applied and the result says so", async () => {
+      const sim = simStore();
+      const a = device(sim, mkDoc());
+      a.edit("tasks", { id: "ta" }, 1e3);
+      await Y.runSync(a.ctx());
+      a.edit("tasks", { id: "tb" }, 2e3);
+      const ctx = a.ctx();
+      const origRead = ctx.remote.read;
+      let n = 0;
+      ctx.remote.read = async () => {
+        const r2 = await origRead();
+        const o = sim.remoteDoc();
+        S.put(o, "tasks", { id: `x${n++}` }, 5e3 + n);
+        await sim.externalWrite(o);
+        return r2;
+      };
+      const before = a.applied;
+      const r = await Y.runSync(ctx);
+      assert2.eq(r.status, "incomplete");
+      assert2.eq(a.applied, before);
+    });
+    test("sync: an unreadable cloud copy is never overwritten and local data is untouched", async () => {
+      const sim = simStore();
+      await sim.remote().write("{broken", null);
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t" }, 1);
       let err;
@@ -5317,13 +5459,13 @@ ${text2}\r
       }
       assert2.ok(err instanceof Y.SyncError);
       assert2.eq(err.code, "corrupt-remote");
-      assert2.eq(sim.file, "{broken");
-      assert2.eq(sim.version, 3);
+      assert2.eq(sim.text(), "{broken");
+      assert2.eq(sim.version(), 1);
       assert2.eq(a.applied, 0);
     });
-    test("sync: a Drive file from a newer app version or from the sample workspace is refused", async () => {
-      const sim = simDrive();
-      sim.file = JSON.stringify({ schemaVersion: 99 });
+    test("sync: a cloud copy from a newer app version or from the sample workspace is refused", async () => {
+      const sim = simStore();
+      await sim.remote().write(JSON.stringify({ schemaVersion: 99 }), null);
       const a = device(sim, mkDoc());
       let e1;
       try {
@@ -5332,7 +5474,7 @@ ${text2}\r
         e1 = e;
       }
       assert2.eq(e1.code, "corrupt-remote");
-      sim.file = JSON.stringify(S.emptyDoc(T0, "sample"));
+      await sim.externalWrite(S.emptyDoc(T0, "sample"));
       let e2;
       try {
         await Y.runSync(a.ctx());
@@ -5341,101 +5483,213 @@ ${text2}\r
       }
       assert2.includes(e2.message, "sample");
     });
-    test("sync: errors become readable messages (expired sign-in, network down, rate limit)", async () => {
-      const sim = simDrive();
-      const a = device(sim, mkDoc());
-      sim.failWith = 401;
-      let e;
+    test("sync: a cloud copy with a strange shape or a torn set of chunks is refused or retried, never trusted", async () => {
+      const sim = simStore();
+      sim.data.set("store/meta", { version: 1, chunks: 9999, updatedAt: 1 });
+      let e1;
       try {
-        await Y.runSync(a.ctx());
-      } catch (x) {
-        e = x;
+        await sim.remote().read();
+      } catch (e) {
+        e1 = e;
       }
-      assert2.eq(e.code, "auth");
-      sim.failWith = 429;
+      assert2.eq(e1.code, "corrupt-remote");
+      const sim2 = simStore();
+      await sim2.remote().write('{"x":1}', null);
+      sim2.tornRead = true;
+      let e2;
       try {
-        await Y.runSync(a.ctx());
-      } catch (x) {
-        e = x;
+        await sim2.remote().read();
+      } catch (e) {
+        e2 = e;
       }
-      assert2.eq(e.code, "rate");
-      sim.failWith = null;
-      sim.networkDown = true;
-      try {
-        await Y.runSync(a.ctx());
-      } catch (x) {
-        e = x;
-      }
-      assert2.eq(e.code, "network");
+      assert2.eq(e2.code, "busy");
     });
-    test("sync: every request goes to googleapis.com with a bearer token, and only the app-data scope is used", async () => {
-      const sim = simDrive();
+    test("sync: errors become readable messages with a code (rules, sign-in expired, network, quota, missing database, popups, domain)", () => {
+      const c = (x) => Y.explainError(x).code;
+      assert2.eq(c({ code: "permission-denied" }), "forbidden");
+      assert2.eq(c({ code: "unauthenticated" }), "auth");
+      assert2.eq(c({ code: "unavailable" }), "network");
+      assert2.eq(c(new TypeError("x")), "network");
+      assert2.eq(c({ code: "resource-exhausted" }), "rate");
+      assert2.eq(c({ code: "not-found" }), "config");
+      assert2.eq(c({ code: "auth/popup-blocked" }), "auth");
+      assert2.includes(Y.explainError({ code: "auth/popup-blocked" }).message, "pop-ups");
+      assert2.eq(c({ code: "auth/unauthorized-domain" }), "config");
+      assert2.eq(c({ code: "auth/operation-not-allowed" }), "config");
+      assert2.eq(c({ code: "weird" }), "http");
+      assert2.eq(c(new Y.SyncError("x", "y")), "x");
+    });
+    test("sync: failures from the store surface as SyncError and leave local data alone", async () => {
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t" }, 1);
-      await Y.runSync(a.ctx());
-      for (const c of sim.calls) {
-        assert2.eq(new URL(c.url).hostname, "www.googleapis.com");
-        assert2.eq(c.headers.Authorization, "Bearer tok-123");
+      for (const [fail3, code] of [["permission-denied", "forbidden"], ["network", "network"], ["resource-exhausted", "rate"]]) {
+        sim.failWith = fail3;
+        let e;
+        try {
+          await Y.runSync(a.ctx());
+        } catch (x) {
+          e = x;
+        }
+        assert2.eq(e.code, code);
       }
-      assert2.eq(Y.DRIVE_SCOPE, "https://www.googleapis.com/auth/drive.appdata");
-      assert2.ok(sim.calls.some((c) => c.url.includes("spaces=appDataFolder")));
-    });
-    test("sync: updating the existing file uses PATCH on that file id (no duplicate files are created)", async () => {
-      const sim = simDrive();
-      const a = device(sim, mkDoc());
-      a.edit("tasks", { id: "t1" }, 1);
-      await Y.runSync(a.ctx());
-      a.edit("tasks", { id: "t2" }, 2);
-      await Y.runSync(a.ctx());
-      assert2.eq(sim.calls.filter((c) => c.method === "POST").length, 1);
-      assert2.ok(sim.calls.some((c) => c.method === "PATCH" && c.url.includes("/files/F1")));
+      assert2.eq(a.applied, 0);
+      assert2.deepEq(ids(a.doc), ["t"]);
     });
     test("sync: syncing twice with no changes uploads nothing the second time", async () => {
-      const sim = simDrive();
+      const sim = simStore();
       const a = device(sim, mkDoc());
       a.edit("tasks", { id: "t1" }, 1);
       await Y.runSync(a.ctx());
-      const v = sim.version;
+      const v = sim.version();
       const r = await Y.runSync(a.ctx());
       assert2.eq(r.uploaded, false);
-      assert2.eq(sim.version, v);
+      assert2.eq(sim.version(), v);
     });
-    test("token provider: asks Google once, caches the token in memory, uses the app-data scope", async () => {
-      let asked = 0;
-      let scope = null;
-      const google = { accounts: { oauth2: { initTokenClient: (cfg) => {
-        scope = cfg.scope;
-        return { requestAccessToken: () => {
-          asked += 1;
-          cfg.callback({ access_token: "abc", expires_in: 3600 });
-        } };
-      } } } };
-      const get = Y.createTokenProvider({ loadScript: async () => {
-      }, getGoogle: () => google, clientId: "x.apps.googleusercontent.com" });
-      assert2.eq(await get(), "abc");
-      assert2.eq(await get(), "abc");
-      assert2.eq(asked, 1);
-      assert2.eq(scope, Y.DRIVE_SCOPE);
+    test("sync: large data is split into chunks below the 1 MiB document limit, reads back identical, and shrinking removes stale chunks", async () => {
+      const sim = simStore();
+      const rem = sim.remote();
+      const big = JSON.stringify({ s: "\xE9\u20AC\u{1F600}x".repeat(2e5) });
+      await rem.write(big, null);
+      const meta = sim.data.get("store/meta");
+      assert2.ok(meta.chunks >= 3, `chunks ${meta.chunks}`);
+      for (let i = 0; i < meta.chunks; i++) {
+        const bytes = new TextEncoder().encode(JSON.stringify(sim.data.get(`store/c${i}`))).length;
+        assert2.ok(bytes < 1048576, `chunk ${i} is ${bytes} bytes`);
+      }
+      assert2.eq((await rem.read()).text, big);
+      await rem.write('{"small":1}', 1);
+      assert2.eq(sim.data.size, 2);
+      assert2.eq((await rem.read()).text, '{"small":1}');
+      assert2.eq(sim.data.get("store/meta").version, 2);
     });
-    test("token provider: a missing client ID or a refused sign-in gives a clear error", async () => {
-      const none = Y.createTokenProvider({ loadScript: async () => {
-      }, getGoogle: () => ({}), clientId: "" });
-      let e;
-      try {
-        await none();
-      } catch (x) {
-        e = x;
+    test("sync: splitText never cuts a surrogate pair and rejoins exactly", () => {
+      const t = "\u{1F600}".repeat(11);
+      const parts = Y.splitText(t, 5);
+      for (const p of parts) {
+        const first = p.charCodeAt(0);
+        const last = p.charCodeAt(p.length - 1);
+        assert2.ok(!(first >= 56320 && first <= 57343) && !(last >= 55296 && last <= 56319));
       }
-      assert2.eq(e.code, "config");
-      const google = { accounts: { oauth2: { initTokenClient: (cfg) => ({ requestAccessToken: () => cfg.callback({ error: "access_denied" }) }) } } };
-      const get = Y.createTokenProvider({ loadScript: async () => {
-      }, getGoogle: () => google, clientId: "c" });
+      assert2.eq(parts.join(""), t);
+      assert2.deepEq(Y.splitText(""), [""]);
+    });
+    function fakeSdk(opts = {}) {
+      const log = { docs: [], popups: 0, signedOut: 0, config: null };
+      const store = /* @__PURE__ */ new Map();
+      let user = opts.user || null;
+      const docRef = (path) => ({ path });
+      const snap = (p) => ({ exists: () => store.has(p), data: () => JSON.parse(JSON.stringify(store.get(p))) });
+      const mods = {
+        "firebase-app.js": { initializeApp: (cfg) => {
+          log.config = cfg;
+          return { cfg };
+        } },
+        "firebase-auth.js": {
+          getAuth: () => ({ get currentUser() {
+            return user;
+          }, authStateReady: async () => {
+          } }),
+          GoogleAuthProvider: class {
+            setCustomParameters(p) {
+              log.params = p;
+            }
+          },
+          signInWithPopup: async () => {
+            log.popups += 1;
+            if (opts.popupError) throw { code: opts.popupError };
+            user = { uid: "U1", email: "me@example.com", displayName: "Me" };
+            return { user };
+          },
+          signOut: async () => {
+            log.signedOut += 1;
+            user = null;
+          }
+        },
+        "firebase-firestore.js": {
+          initializeFirestore: () => ({}),
+          doc: (_fs, path) => docRef(path),
+          getDoc: async (r) => {
+            log.docs.push(r.path);
+            return snap(r.path);
+          },
+          runTransaction: async (_fs, fn) => fn({ get: async (r) => {
+            log.docs.push(r.path);
+            return snap(r.path);
+          }, set: (r, d) => {
+            log.docs.push(r.path);
+            store.set(r.path, d);
+          }, delete: (r) => {
+            store.delete(r.path);
+          } })
+        }
+      };
+      const importModule = async (url) => {
+        if (opts.loadFails) throw new Error("offline");
+        const m = mods[url.split("/").pop()];
+        if (!m) throw new Error(`unexpected module ${url}`);
+        log.urls = (log.urls || []).concat(url);
+        return m;
+      };
+      return { log, store, importModule };
+    }
+    test("firebase wrapper: loads the pinned SDK from gstatic, signs in with a Google popup and restores the user", async () => {
+      const f = fakeSdk();
+      const cloud2 = F.createCloud({ config: { projectId: "p" }, importModule: f.importModule });
+      assert2.eq(await cloud2.restore(), null);
+      const u = await cloud2.signIn();
+      assert2.eq(u.uid, "U1");
+      assert2.eq(u.email, "me@example.com");
+      assert2.eq(f.log.popups, 1);
+      assert2.eq(f.log.config.projectId, "p");
+      for (const url of f.log.urls) assert2.ok(url.startsWith(`https://www.gstatic.com/firebasejs/${F.SDK_VERSION}/`), url);
+      assert2.eq((await cloud2.restore()).uid, "U1");
+      await cloud2.signOut();
+      assert2.eq(f.log.signedOut, 1);
+      assert2.eq(await cloud2.restore(), null);
+    });
+    test("firebase wrapper: every stored path is under users/<uid>/, and a full sync round-trips through it", async () => {
+      const f = fakeSdk();
+      const cloud2 = F.createCloud({ config: {}, importModule: f.importModule });
+      await cloud2.load();
+      const a = device({ remote: () => Y.createRemote(cloud2.db("U1")) }, mkDoc());
+      a.edit("tasks", { id: "t1" }, 1e3);
+      await Y.runSync(a.ctx());
+      const b = device({ remote: () => Y.createRemote(cloud2.db("U1")) }, mkDoc("doc_b"));
+      await Y.runSync(b.ctx());
+      assert2.deepEq(ids(b.doc), ["t1"]);
+      assert2.ok(f.store.size >= 2);
+      for (const p of f.store.keys()) assert2.ok(p.startsWith("users/U1/store/"), p);
+      for (const p of f.log.docs) assert2.ok(p.startsWith("users/U1/"), p);
+      const other = device({ remote: () => Y.createRemote(cloud2.db("U2")) }, mkDoc("doc_c"));
+      await Y.runSync(other.ctx());
+      assert2.deepEq(ids(other.doc), ["t1"].filter(() => false));
+    });
+    test("firebase wrapper: SDK load failure and sign-in errors become readable errors", async () => {
+      const bad = F.createCloud({ config: {}, importModule: fakeSdk({ loadFails: true }).importModule });
+      let e1;
       try {
-        await get();
+        await bad.signIn();
       } catch (x) {
-        e = x;
+        e1 = x;
       }
-      assert2.eq(e.code, "auth");
+      assert2.eq(e1.code, "config");
+      const f = fakeSdk({ popupError: "auth/popup-closed-by-user" });
+      const cloud2 = F.createCloud({ config: {}, importModule: f.importModule });
+      let e2;
+      try {
+        await cloud2.signIn();
+      } catch (x) {
+        e2 = x;
+      }
+      assert2.eq(e2.code, "auth");
+      let e3;
+      try {
+        F.createCloud({ config: {}, importModule: f.importModule }).db("U1");
+      } catch (x) {
+        e3 = x;
+      }
+      assert2.eq(e3.code, "config");
     });
   }
   var init_sync_tests = __esm({
@@ -6185,7 +6439,7 @@ ${text2}\r
     const suite = createSuite();
     engineTests(suite, assert, engine_exports, fsrs_reference_default);
     storeTests(suite, assert, engine_exports, store_exports);
-    syncTests(suite, assert, engine_exports, store_exports, sync_exports);
+    syncTests(suite, assert, engine_exports, store_exports, sync_exports, firebase_exports);
     sampleTests(suite, assert, engine_exports, store_exports, sample_exports);
     actionsTests(suite, assert, engine_exports, store_exports, actions_exports);
     timerTests(suite, assert, engine_exports, timer_exports);
@@ -6199,6 +6453,7 @@ ${text2}\r
       init_engine();
       init_store();
       init_sync();
+      init_firebase();
       init_actions();
       init_model();
       init_views();
@@ -6223,11 +6478,23 @@ ${text2}\r
   init_views();
   init_timer();
   init_sync();
+  init_firebase();
+
+  // src/config.js
+  var FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDo_QCsQ2kJd5WYK-Dn8wE3Pwg26HUoVJI",
+    authDomain: "apex-ba40d.firebaseapp.com",
+    projectId: "apex-ba40d",
+    storageBucket: "apex-ba40d.firebasestorage.app",
+    messagingSenderId: "93629900203",
+    appId: "1:93629900203:web:b3dfadb8c1d2af4b641eee"
+  };
+
+  // src/app.js
   init_sample();
   var $ = (id) => document.getElementById(id);
   var PHONES = ["room", "bag", "desk"];
   var TABS = ["execution", "mirror", "skills", "decisions", "weekly"];
-  var CLIENT_ID_RE = /^[0-9A-Za-z._-]{6,200}\.apps\.googleusercontent\.com$/;
   var PILL_ON = (
     /*tw*/
     "bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-sm border border-hairline"
@@ -6298,8 +6565,13 @@ ${text2}\r
       saveIndicatorTimer: null,
       missionTimer: null,
       focusActual: 0,
-      tokenProvider: null,
-      tokenClient: ""
+      user: null,
+      signingIn: false,
+      seenRev: 0,
+      syncedRev: -1,
+      editAt: 0,
+      lastAttempt: 0,
+      retryAt: 0
     }
   };
   var rt = () => st.rts[st.ws];
@@ -6344,7 +6616,8 @@ ${text2}\r
     if (!p || typeof p !== "object") return o;
     if (p.theme === "light" || p.theme === "dark") o.theme = p.theme;
     if (typeof p.activeGoalId === "string" && ID_PATTERN.test(p.activeGoalId)) o.activeGoalId = p.activeGoalId;
-    if (typeof p.clientId === "string" && CLIENT_ID_RE.test(p.clientId)) o.clientId = p.clientId;
+    if (typeof p.cloudEmail === "string" && p.cloudEmail.length <= 320) o.cloudEmail = p.cloudEmail;
+    if (typeof p.cloudUid === "string" && /^[A-Za-z0-9]{1,128}$/.test(p.cloudUid)) o.cloudUid = p.cloudUid;
     for (const k of ["lastExportAt", "lastSyncAt"]) if (Number.isFinite(p[k])) o[k] = p[k];
     if (p.firstRunDismissed === true) o.firstRunDismissed = true;
     return o;
@@ -6440,6 +6713,7 @@ ${text2}\r
       st.today = key;
       newDay();
     }
+    autoSync(now);
     const r = rt();
     const t = r.timer;
     if (t) {
@@ -6701,11 +6975,15 @@ ${text2}\r
     show2("undoRow", Boolean(u));
     if (u) setText("undoLabel", `Undo available: ${u.label} (${hhmm(u.takenAt)}). Restores your data to that moment; later changes are removed.`);
     show2("corruptRow", Boolean(st.persist.corruptCopy()));
-    const idIn = $("googleClientIdInput");
-    if (idIn && document.activeElement !== idIn && !idIn.value) idIn.value = st.prefs.clientId || "";
-    const synced = st.prefs.lastSyncAt ? `Last synced ${new Date(st.prefs.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : "Not connected";
+    const user = st.ui.user;
+    const busy = st.ui.syncState === "busy";
+    show2("btnSignIn", !user);
+    show2("btnSyncNow", Boolean(user));
+    show2("btnSignOut", Boolean(user));
+    setText("cloudAccountLine", user ? `Signed in as ${user.email || "your Google account"}` : st.prefs.cloudEmail ? `Reconnecting ${st.prefs.cloudEmail}\u2026` : "Not signed in. Your data is saved in this browser only.");
+    const synced = st.prefs.lastSyncAt ? `Last synced ${new Date(st.prefs.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : user ? "Not synced yet" : "";
     setText("syncStatusLine", st.ui.syncMsg || synced);
-    setText("modalCloudStatusBadge", st.ui.syncState === "busy" ? "Syncing\u2026" : st.ui.syncState === "error" ? "Problem" : st.prefs.lastSyncAt ? "Synced" : "Local only");
+    setText("modalCloudStatusBadge", busy ? "Syncing\u2026" : st.ui.syncState === "error" ? "Problem" : user ? st.prefs.lastSyncAt ? "Synced" : "Signed in" : "Local only");
   }
   function renderPaletteList() {
     $("commandPaletteList").innerHTML = paletteList(st.ui.palette.items, st.ui.palette.active);
@@ -7299,6 +7577,8 @@ ${text2}\r
   function openSystemDrawer() {
     renderSystem();
     openModal("systemDrawerModal");
+    if (canSync()) cloud.load().catch(() => {
+    });
   }
   function closeSystemDrawer() {
     closeModal("systemDrawerModal");
@@ -7469,52 +7749,37 @@ ${text2}\r
       toast("Restored.");
     }
   }
-  function loadGoogleScript() {
-    if (window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = "https://accounts.google.com/gsi/client";
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new SyncError("config", "Google sign-in could not be loaded. Check the connection."));
-      document.head.appendChild(s);
-    });
-  }
+  var cloud = createCloud({ config: FIREBASE_CONFIG });
+  var canSync = () => /^https?:$/.test(location.protocol);
   function setSync(state, msg) {
     st.ui.syncState = state;
     st.ui.syncMsg = msg;
     renderHeader(base(doc(), st.now()));
     if (isOpen("systemDrawerModal")) renderSystem();
   }
-  async function syncNow() {
+  var syncFailure = (e) => (e instanceof SyncError ? e : explainError(e)).message;
+  async function syncNow(opts = {}) {
+    const auto = opts.auto === true;
     if (st.ws !== "real") {
-      setSync("error", "Sync is off in the sample workspace.");
+      if (!auto) setSync("error", "Sync is off in the sample workspace.");
       return;
     }
-    if (!/^https?:$/.test(location.protocol)) {
-      setSync("error", "Drive sync needs APEX opened from an https address (see docs/GOOGLE_SETUP.md). It cannot run from a local file.");
+    if (!canSync()) {
+      if (!auto) setSync("error", "Sync needs APEX opened from its https address. It cannot run from a local file.");
       return;
     }
-    const id = ($("googleClientIdInput").value || "").trim() || st.prefs.clientId || "";
-    if (!CLIENT_ID_RE.test(id)) {
-      setSync("error", "Paste your OAuth client ID first (it ends in .apps.googleusercontent.com).");
+    if (!st.ui.user) {
+      if (!auto) setSync("error", "Sign in with Google first.");
       return;
     }
     if (st.ui.syncing) return;
-    if (id !== st.prefs.clientId) {
-      st.prefs.clientId = id;
-      savePrefs();
-    }
-    if (!st.ui.tokenProvider || st.ui.tokenClient !== id) {
-      st.ui.tokenProvider = createTokenProvider({ loadScript: loadGoogleScript, getGoogle: () => window.google, clientId: id });
-      st.ui.tokenClient = id;
-    }
     st.ui.syncing = true;
+    st.ui.lastAttempt = st.now();
+    const startRev = st.editRev;
     setSync("busy", "Syncing\u2026");
     try {
-      const drive = createDrive({ fetchFn: (u, i) => fetch(u, i), getToken: () => st.ui.tokenProvider(true) });
       const res = await runSync({
-        drive,
+        remote: createRemote(cloud.db(st.ui.user.uid)),
         workspace: () => st.ws,
         getLocal: () => st.docs.real,
         editRev: () => st.editRev,
@@ -7527,17 +7792,98 @@ ${text2}\r
       });
       if (res.status === "ok") {
         st.prefs.lastSyncAt = st.now();
+        st.prefs.cloudUid = st.ui.user.uid;
         savePrefs();
+        st.ui.syncedRev = res.note ? startRev : st.editRev;
         setSync("idle", `Synced at ${hhmm(st.now())}${res.uploaded ? " \xB7 uploaded" : ""}${res.pulledChanges ? " \xB7 pulled changes" : ""}${res.note ? ` \xB7 ${res.note}` : ""}`);
-      } else setSync("error", res.message || "Sync did not finish.");
+      } else {
+        st.ui.retryAt = st.now() + 6e4;
+        setSync("error", res.message || "Sync did not finish.");
+      }
     } catch (e) {
-      setSync("error", e instanceof SyncError ? e.message : "Sync failed unexpectedly. Your local data is unchanged.");
+      st.ui.retryAt = st.now() + 6e4;
+      setSync("error", syncFailure(e));
     } finally {
       st.ui.syncing = false;
     }
   }
-  function connectGoogleDrive() {
-    return syncNow();
+  async function signInGoogle() {
+    if (!canSync()) {
+      setSync("error", "Sign-in needs APEX opened from its https address, not a local file.");
+      return;
+    }
+    if (st.ui.signingIn) return;
+    st.ui.signingIn = true;
+    setSync("busy", "Opening Google sign-in\u2026");
+    try {
+      const u = await cloud.signIn();
+      if (st.prefs.cloudUid && st.prefs.cloudUid !== u.uid && !window.confirm(`This browser was last synced with a different Google account. Merge this browser's data into ${u.email || "this account"}'s cloud copy? Cancel to sign out and keep the two separate.`)) {
+        await cloud.signOut();
+        setSync("idle", "Signed out. Nothing was uploaded.");
+        return;
+      }
+      st.ui.user = u;
+      st.prefs.cloudEmail = u.email || "Google account";
+      savePrefs();
+    } catch (e) {
+      setSync("error", syncFailure(e));
+      return;
+    } finally {
+      st.ui.signingIn = false;
+    }
+    if (st.ws !== "real") {
+      setSync("idle", "Signed in. Syncing starts when you are back in your own data.");
+      return;
+    }
+    await syncNow();
+  }
+  async function signOutGoogle() {
+    try {
+      await cloud.signOut();
+    } catch (e) {
+      setSync("error", syncFailure(e));
+      return;
+    }
+    st.ui.user = null;
+    delete st.prefs.cloudEmail;
+    delete st.prefs.lastSyncAt;
+    savePrefs();
+    setSync("idle", "Signed out. Your data stays in this browser; the cloud copy is untouched.");
+  }
+  function restoreSignIn() {
+    if (!st.prefs.cloudEmail || !canSync()) return;
+    cloud.restore().then((u) => {
+      if (!u) {
+        delete st.prefs.cloudEmail;
+        savePrefs();
+        renderSystem();
+        return;
+      }
+      if (st.prefs.cloudUid && st.prefs.cloudUid !== u.uid) {
+        cloud.signOut().catch(() => {
+        });
+        delete st.prefs.cloudEmail;
+        savePrefs();
+        setSync("idle", "The signed-in Google account changed. Sign in again to choose what to merge.");
+        return;
+      }
+      st.ui.user = u;
+      renderSystem();
+      if (st.ws === "real") syncNow({ auto: true });
+    }).catch((e) => {
+      st.ui.retryAt = st.now() + 6e4;
+      setSync("error", syncFailure(e));
+    });
+  }
+  function autoSync(now) {
+    const u = st.ui;
+    if (!u.user || u.syncing || u.signingIn || st.ws !== "real" || document.hidden || !canSync()) return;
+    if (st.editRev !== u.seenRev) {
+      u.seenRev = st.editRev;
+      u.editAt = now;
+    }
+    if (now < u.retryAt) return;
+    if (st.editRev !== u.syncedRev && now - u.editAt >= 8e3 || now - u.lastAttempt > 18e4) syncNow({ auto: true });
   }
   async function runUnitTests() {
     const grid = $("unitTestResultsGrid");
@@ -7555,7 +7901,7 @@ ${text2}\r
       });
       bar.textContent = `${out.total - out.failed}/${out.total} passed \xB7 time zone ${out.timeZone}`;
       bar.className = `text-xs font-mono-num p-2.5 rounded-lg surface-subtle ${out.failed ? "text-[var(--accent-coral)]" : "text-[var(--accent-sage)]"}`;
-      if (!out.failed) grid.innerHTML = '<div class="text-muted-tone">All checks passed: scheduling math, estimates, statistics, storage, merge, sync (simulated Drive), timers and screens.</div>';
+      if (!out.failed) grid.innerHTML = '<div class="text-muted-tone">All checks passed: scheduling math, estimates, statistics, storage, merge, sync (simulated Firestore), timers and screens.</div>';
     } catch (e) {
       bar.textContent = `The self-check could not run: ${e.message}`;
     }
@@ -7825,7 +8171,8 @@ ${text2}\r
     closeSystemDrawer,
     closeNightlyReviewModal,
     cancelImport,
-    connectGoogleDrive,
+    signInGoogle,
+    signOutGoogle,
     applyReferenceClassEstimate
   };
   function init({ storage = window.localStorage, now = () => Date.now() } = {}) {
@@ -7883,6 +8230,7 @@ ${text2}\r
     window.addEventListener("storage", absorbStorage);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) tick();
+      else if (st.ui.user && st.editRev !== st.ui.syncedRev) syncNow({ auto: true });
     });
     window.addEventListener("pagehide", () => {
       commitMissionIfPending();
@@ -7892,6 +8240,7 @@ ${text2}\r
     switchTab("execution");
     renderAll();
     setInterval(tick, 1e3);
+    restoreSignIn();
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("./sw.js").catch(() => {
     });
   }
